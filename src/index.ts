@@ -9,10 +9,10 @@ const ACCESS = process.env.ONSHAPE_ACCESS_KEY;
 const SECRET = process.env.ONSHAPE_SECRET_KEY;
 type Method = "GET" | "POST" | "DELETE";
 const id = z.string().min(1);
-const wvm = z.enum(["w", "v", "m"]).default("w");
-const ctx = z.object({ documentId: id, workspaceId: id, elementId: id });
 
-function auth() { if (!ACCESS || !SECRET) throw new Error("Onshape credentials are not configured."); }
+function auth() {
+  if (!ACCESS || !SECRET) throw new Error("Onshape credentials are not configured.");
+}
 function sign(method: string, url: URL, nonce: string, date: string, contentType: string) {
   auth();
   const canonical = (method.toUpperCase() + "\n" + nonce + "\n" + date + "\n" + contentType + "\n" + url.pathname + "\n" + url.search.slice(1) + "\n").toLowerCase();
@@ -22,99 +22,120 @@ async function api(method: Method, path: string, query?: Record<string, unknown>
   auth();
   if (!path.startsWith("/api/")) throw new Error("Onshape path must start with /api/.");
   const url = new URL(path, BASE);
-  for (const [k,v] of Object.entries(query || {})) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  for (const [k, v] of Object.entries(query || {})) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   const contentType = "application/json";
-  const date = new Date().toUTCString(); const nonce = randomBytes(18).toString("base64url");
-  const r = await fetch(url, { method, headers: { Accept:"application/json", "Content-Type":contentType, Date:date, "On-Nonce":nonce, Authorization:sign(method,url,nonce,date,contentType) }, body: method === "GET" ? undefined : body === undefined ? undefined : JSON.stringify(body) });
-  const text = await r.text(); let data: unknown = text; try { data = text ? JSON.parse(text) : null; } catch {}
-  if (!r.ok) throw new Error(`Onshape API HTTP ${r.status}: ${typeof data === "string" ? data : JSON.stringify(data)}`);
+  const date = new Date().toUTCString();
+  const nonce = randomBytes(18).toString("base64url");
+  const response = await fetch(url, {
+    method,
+    headers: { Accept: "application/json", "Content-Type": contentType, Date: date, "On-Nonce": nonce, Authorization: sign(method, url, nonce, date, contentType) },
+    body: method === "GET" ? undefined : body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data: unknown = text;
+  try { data = text ? JSON.parse(text) : null; } catch {}
+  if (!response.ok) throw new Error(`Onshape API HTTP ${response.status}: ${typeof data === "string" ? data : JSON.stringify(data)}`);
   return data;
 }
-async function call(fn:()=>Promise<unknown>) { try { const x=await fn(); return {content:[{type:"text" as const,text:typeof x === "string"?x:JSON.stringify(x,null,2)}]}; } catch(e) { return {content:[{type:"text" as const,text:e instanceof Error?e.message:String(e)}],isError:true}; } }
+async function call(fn: () => Promise<unknown>) {
+  try {
+    const value = await fn();
+    return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] };
+  } catch (error) {
+    return { content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
+  }
+}
 
-const catalog = {
-  documents: ["GET/POST /api/v10/documents", "GET/POST document metadata", "workspaces", "versions", "microversions", "elements", "document permissions/sharing"],
-  partStudios: ["create Part Studio", "feature tree CRUD", "FeatureScript evaluation", "parts", "part metadata", "bounding boxes", "tessellation", "sketches/features", "mass properties", "part transforms"],
-  assemblies: ["create Assembly", "assembly definition", "instances/occurrences", "mates/mate connectors", "patterns", "transforms", "assembly features", "BOM/assembly structure"],
-  drawings: ["drawing creation/editing", "views/annotations/tables", "drawing JSON", "drawing translation/export formats"],
-  configurations: ["get/update configuration", "encode configuration", "configured parts/assemblies", "configured exports"],
-  importExport: ["STEP", "STL", "Parasolid", "glTF", "OBJ", "3MF and translator formats where supported", "async translations", "sync exports", "blob import/download"],
-  metadata: ["element metadata", "part metadata", "custom properties", "appearance/material metadata"],
-  materials: ["material libraries", "material lookup", "material assignment endpoints where supported"],
-  releaseManagement: ["revisions", "release candidates", "submit/approve/publish", "obsoletion and workflows where account permits"],
-  blobs: ["upload/download/update blob elements", "file-backed document data"],
-  usersAndTeams: ["current user", "users/teams endpoints exposed by account/API version"],
-  advanced: ["raw REST endpoint access", "FeatureScript eval", "tessellation", "associativity", "webhook/application endpoints when credentials/scopes permit"]
-};
+const capabilityText = `Comprehensive Onshape CAD access. Supported API families include Documents, Workspaces, Versions, Microversions, Elements, Part Studios, Features, FeatureScript evaluation, sketches, parts, mass properties, bounding boxes, tessellation, Assemblies, instances, occurrences, mates, mate connectors, assembly transforms and patterns, BOM/product structure, Drawings, drawing views/annotations/tables/JSON, Configurations, Materials, Metadata/custom properties, Import/Export and translations (STEP, STL, Parasolid, glTF/GLB, OBJ and other supported translators), Blobs/files, Release Management/revisions/release candidates, Associativity, users/teams and other documented Onshape REST endpoints. The raw path mode exists so newly added Onshape endpoints can be used without changing this server.`;
 
 const mcp = createMcpHandler(server => {
-  server.registerTool("test_connection", { title:"Test Connection", description:"Verify Onshape authentication.", inputSchema:z.object({}) }, async()=>call(()=>api("GET","/api/v10/documents",{limit:1})));
-  server.registerTool("onshape_api_catalog", { title:"Onshape API Catalog", description:"Returns the comprehensive capability map and example API families. Use this before onshape_api when you need an operation that does not have a dedicated tool.", inputSchema:z.object({}) }, async()=>call(async()=>catalog));
-  server.registerTool("onshape_api", { title:"Full Onshape REST API", description:"Authenticated escape-hatch for the complete Onshape REST API. Supports any documented GET, POST or DELETE endpoint and is intentionally broad so new Onshape endpoints do not require MCP code changes. Follow onshape_api_catalog and official Onshape API docs for payloads.", inputSchema:z.object({ method:z.enum(["GET","POST","DELETE"]), path:z.string().startsWith("/api/"), query:z.record(z.string(),z.unknown()).optional(), body:z.unknown().optional() }) }, async({method,path,query,body})=>call(()=>api(method,path,query,body)));
+  server.registerTool("onshape_cad", {
+    title: "Onshape CAD",
+    description: capabilityText + " Use operation for common CAD actions or method/path for any documented endpoint. Inspect before writing; verify feature status after writes.",
+    inputSchema: z.object({
+      operation: z.enum([
+        "list_documents","get_document","create_document","update_document","list_workspaces","list_versions","create_version","list_elements",
+        "get_partstudio_features","create_partstudio","create_feature","update_feature","delete_feature","evaluate_featurescript","get_parts","get_part_metadata","get_bounding_box",
+        "create_assembly","get_assembly","assembly_operation","get_configuration","update_configuration",
+        "get_metadata","update_metadata","get_materials","translation_formats","create_translation","get_translation","export_partstudio","export_part","export_assembly",
+        "drawing_operation","release_operation","blob_operation","associativity_operation","user_team_operation","raw"
+      ]).default("raw"),
+      method: z.enum(["GET","POST","DELETE"]).optional(),
+      path: z.string().startsWith("/api/").optional(),
+      documentId: id.optional(), workspaceId: id.optional(), elementId: id.optional(), wvmId: id.optional(), featureId: id.optional(), partId: id.optional(),
+      q: z.string().optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional(),
+      query: z.record(z.string(), z.unknown()).optional(), body: z.unknown().optional(), feature: z.record(z.string(), z.unknown()).optional(),
+      configuration: z.string().optional(), script: z.string().optional(), rollbackBarIndex: z.number().int().optional()
+    })
+  }, async args => {
+    const a = args as Record<string, unknown>;
+    const documentId = String(a.documentId || "");
+    const workspaceId = String(a.workspaceId || "");
+    const elementId = String(a.elementId || "");
+    const wvmId = String(a.wvmId || workspaceId);
+    const featureId = String(a.featureId || "");
+    const partId = String(a.partId || "");
+    const q = (a.query || {}) as Record<string, unknown>;
+    const body = a.body;
+    const operation = String(a.operation || "raw");
+    const path = (a.path as string | undefined);
+    const method = (a.method as Method | undefined);
+    const need = (name: string, value: string) => { if (!value) throw new Error(`${name} is required for operation ${operation}.`); };
 
-  server.registerTool("list_onshape_documents", { title:"List Documents", description:"Search/list documents visible to the account.", inputSchema:z.object({q:z.string().optional(),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}) }, async({q,offset,limit})=>call(()=>api("GET","/api/v10/documents",{q,offset:offset??0,limit:limit??20})));
-  server.registerTool("get_onshape_document", { title:"Get Document", description:"Get document metadata.", inputSchema:z.object({documentId:id}) }, async({documentId})=>call(()=>api("GET",`/api/v10/documents/${encodeURIComponent(documentId)}`)));
-  server.registerTool("create_onshape_document", { title:"Create Document", description:"Create a document.", inputSchema:z.object({name:z.string().min(1)}) }, async({name})=>call(()=>api("POST","/api/v10/documents",undefined,{name})));
-  server.registerTool("update_onshape_document", { title:"Update Document", description:"Update basic document attributes.", inputSchema:z.object({documentId:id,name:z.string().optional(),description:z.string().optional()}) }, async({documentId,name,description})=>call(()=>api("POST",`/api/v10/documents/${encodeURIComponent(documentId)}`,undefined,{name,description})));
-  server.registerTool("get_onshape_workspaces", { title:"Get Workspaces", description:"List workspaces/branches.", inputSchema:z.object({documentId:id}) }, async({documentId})=>call(()=>api("GET",`/api/v10/documents/d/${encodeURIComponent(documentId)}/workspaces`)));
-  server.registerTool("get_onshape_versions", { title:"Get Versions", description:"List document versions.", inputSchema:z.object({documentId:id,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}) }, async({documentId,offset,limit})=>call(()=>api("GET",`/api/v10/documents/d/${encodeURIComponent(documentId)}/versions`,{offset:offset??0,limit:limit??20})));
-  server.registerTool("create_onshape_version", { title:"Create Version", description:"Create an immutable named version from a workspace.", inputSchema:z.object({documentId:id,workspaceId:id,name:z.string().min(1)}) }, async({documentId,workspaceId,name})=>call(()=>api("POST",`/api/v10/documents/d/${encodeURIComponent(documentId)}/versions`,undefined,{documentId,workspaceId,name})));
-  server.registerTool("get_onshape_elements", { title:"Get Elements", description:"List Part Studios, Assemblies, Drawings, BOMs and other tabs.", inputSchema:z.object({documentId:id,wvm,wvmId:id}) }, async({documentId,wvm,wvmId})=>call(()=>api("GET",`/api/v10/documents/d/${encodeURIComponent(documentId)}/${wvm}/${encodeURIComponent(wvmId)}/elements`)));
-
-  server.registerTool("get_partstudio_features", { title:"Get Part Studio Features", description:"Read the feature tree, feature states and geometry IDs. Inspect before editing.", inputSchema:ctx.extend({wvm,wvmId:id,rollbackBarIndex:z.number().int().optional(),includeGeometryIds:z.boolean().default(true),noSketchGeometry:z.boolean().default(false)}) }, async({documentId,wvm,wvmId,elementId,rollbackBarIndex,includeGeometryIds,noSketchGeometry})=>call(()=>api("GET",`/api/v9/partstudios/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/features`,{rollbackBarIndex:rollbackBarIndex??-1,includeGeometryIds,noSketchGeometry})));
-  server.registerTool("create_partstudio", { title:"Create Part Studio", description:"Create a Part Studio tab.", inputSchema:z.object({documentId:id,workspaceId:id,name:z.string().min(1)}) }, async({documentId,workspaceId,name})=>call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}`,undefined,{name})));
-  server.registerTool("create_partstudio_feature", { title:"Create Part Studio Feature", description:"Create any documented Part Studio feature using the exact feature definition payload. Prefer dedicated sketch/extrude tools when applicable.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,feature:z.record(z.string(),z.unknown())}) }, async({documentId,workspaceId,elementId,feature})=>call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features`,undefined,feature)));
-  server.registerTool("update_partstudio_feature", { title:"Update Part Studio Feature", description:"Update an existing feature using its exact feature definition.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,featureId:id,feature:z.record(z.string(),z.unknown())}) }, async({documentId,workspaceId,elementId,featureId,feature})=>call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features/featureid/${featureId}`,undefined,feature)));
-  server.registerTool("delete_partstudio_feature", { title:"Delete Part Studio Feature", description:"Delete one feature by feature ID.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,featureId:id}) }, async({documentId,workspaceId,elementId,featureId})=>call(()=>api("DELETE",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features/featureid/${featureId}`)));
-  server.registerTool("evaluate_featurescript", { title:"Evaluate FeatureScript", description:"Run a read/evaluation FeatureScript lambda. Useful for plane IDs, geometry queries, mass/bounding calculations and robust feature planning. It does not persist document changes unless the script explicitly invokes modeling operations and the endpoint permits them.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,script:z.string().min(1),libraryVersion:z.number().int().optional(),rollbackBarIndex:z.number().int().default(-1)}) }, async({documentId,workspaceId,elementId,script,libraryVersion,rollbackBarIndex})=>call(()=>api("POST",`/api/v6/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/featurescript`,{rollbackBarIndex},{libraryVersion:libraryVersion??2144,script})));
-  server.registerTool("get_partstudio_bounding_box", { title:"Get Part Studio Bounding Box", description:"Get graphics-oriented bounding boxes for a Part Studio.", inputSchema:ctx.extend({wvm,wvmId:id,configuration:z.string().optional()}) }, async({documentId,wvm,wvmId,elementId,configuration})=>call(()=>api("GET",`/api/v9/partstudios/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/boundingboxes`,{configuration})));
-  server.registerTool("get_parts", { title:"Get Parts", description:"List parts in a Part Studio or assembly context.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,configuration:z.string().optional(),includePropertyDefaults:z.boolean().optional(),withThumbnails:z.boolean().optional()}) }, async({documentId,wvm,wvmId,elementId,configuration,includePropertyDefaults,withThumbnails})=>call(()=>api("GET",`/api/v9/parts/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/partid`,{configuration,includePropertyDefaults,withThumbnails})));
-  server.registerTool("get_part_metadata", { title:"Get Part Metadata", description:"Read properties/material/appearance metadata for a part.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,partId:id}) }, async({documentId,wvm,wvmId,elementId,partId})=>call(()=>api("GET",`/api/v9/parts/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/partid/${partId}/metadata`)));
-
-  server.registerTool("create_sketch_rectangle", { title:"Create Rectangle Sketch", description:"Create a rectangular sketch on a default plane. Dimensions in mm. The server uses Onshape Feature API structures.", inputSchema:ctx.extend({plane:z.enum(["Top","Front","Right"]).default("Top"),widthMm:z.number().positive(),heightMm:z.number().positive(),centerXmm:z.number().default(0),centerYmm:z.number().default(0),name:z.string().default("Rectangle Sketch")}) }, async({documentId,workspaceId,elementId,plane,widthMm,heightMm,centerXmm,centerYmm,name})=>{
-    const w=widthMm/1000,h=heightMm/1000,x=centerXmm/1000,y=centerYmm/1000,x0=x-w/2,y0=y-h/2;
-    const p=[ [x0,y0],[x0+w,y0],[x0+w,y0+h],[x0,y0+h] ];
-    const entities=p.map((a,i)=>({btType:"BTMSketchCurveSegment-155",entityId:`L${i+1}`,startPointId:`L${i+1}.s`,endPointId:`L${i+1}.e`,startParam:0,endParam:1,geometry:{btType:"BTCurveGeometryLine-117",pntX:a[0],pntY:a[1],dirX:p[(i+1)%4][0]-a[0],dirY:p[(i+1)%4][1]-a[1]}}));
-    const body={btType:"BTFeatureDefinitionCall-1406",feature:{btType:"BTMSketch-151",featureType:"newSketch",name,parameters:[{btType:"BTMParameterQueryList-148",queries:[{btType:"BTMIndividualQuery-138",queryString:`query=qCreatedBy(makeId(\"${plane}\"), EntityType.FACE);`}],parameterId:"sketchPlane"}],entities,constraints:[]}};
-    return call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features`,undefined,body));
+    return call(async () => {
+      switch (operation) {
+        case "list_documents": return api("GET", "/api/v10/documents", { q: a.q, offset: a.offset ?? 0, limit: a.limit ?? 20 });
+        case "get_document": need("documentId", documentId); return api("GET", `/api/v10/documents/${encodeURIComponent(documentId)}`);
+        case "create_document": return api("POST", "/api/v10/documents", undefined, body ?? { name: "Untitled" });
+        case "update_document": need("documentId", documentId); return api("POST", `/api/v10/documents/${encodeURIComponent(documentId)}`, undefined, body);
+        case "list_workspaces": need("documentId", documentId); return api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/workspaces`);
+        case "list_versions": need("documentId", documentId); return api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/versions`, { offset: a.offset ?? 0, limit: a.limit ?? 20 });
+        case "create_version": need("documentId", documentId); need("workspaceId", workspaceId); return api("POST", `/api/v10/documents/d/${encodeURIComponent(documentId)}/versions`, undefined, body);
+        case "list_elements": need("documentId", documentId); need("wvmId", wvmId); return api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/w/${encodeURIComponent(wvmId)}/elements`);
+        case "get_partstudio_features": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v9/partstudios/d/${documentId}/w/${wvmId}/e/${elementId}/features`, { rollbackBarIndex: a.rollbackBarIndex ?? -1, includeGeometryIds: true, noSketchGeometry: false });
+        case "create_partstudio": need("documentId", documentId); need("workspaceId", workspaceId); return api("POST", `/api/v9/partstudios/d/${documentId}/w/${workspaceId}`, undefined, body ?? { name: "Part Studio" });
+        case "create_feature": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); return api("POST", `/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features`, undefined, a.feature ?? body);
+        case "update_feature": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); need("featureId", featureId); return api("POST", `/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features/featureid/${featureId}`, undefined, a.feature ?? body);
+        case "delete_feature": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); need("featureId", featureId); return api("DELETE", `/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features/featureid/${featureId}`);
+        case "evaluate_featurescript": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); need("script", String(a.script || "")); return api("POST", `/api/v6/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/featurescript`, { rollbackBarIndex: a.rollbackBarIndex ?? -1 }, { libraryVersion: 2144, script: a.script });
+        case "get_parts": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v9/parts/d/${documentId}/w/${wvmId}/e/${elementId}/partid`, q);
+        case "get_part_metadata": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); need("partId", partId); return api("GET", `/api/v9/parts/d/${documentId}/w/${wvmId}/e/${elementId}/partid/${partId}/metadata`);
+        case "get_bounding_box": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v9/partstudios/d/${documentId}/w/${wvmId}/e/${elementId}/boundingboxes`, q);
+        case "create_assembly": need("documentId", documentId); need("workspaceId", workspaceId); return api("POST", `/api/v9/assemblies/d/${documentId}/w/${workspaceId}`, undefined, body ?? { name: "Assembly" });
+        case "get_assembly": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v9/assemblies/d/${documentId}/w/${wvmId}/e/${elementId}`, q);
+        case "assembly_operation": need("path", path || ""); need("method", method || ""); return api(method!, path!, q, body);
+        case "get_configuration": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v10/elements/d/${documentId}/w/${wvmId}/e/${elementId}/configuration`);
+        case "update_configuration": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); return api("POST", `/api/v10/elements/d/${documentId}/w/${workspaceId}/e/${elementId}/configuration`, q, body);
+        case "get_metadata": need("documentId", documentId); need("wvmId", wvmId); need("elementId", elementId); return api("GET", `/api/v9/metadata/d/${documentId}/w/${wvmId}/e/${elementId}`, { partId: a.partId, ...q });
+        case "update_metadata": need("documentId", documentId); need("workspaceId", workspaceId); need("elementId", elementId); return api("POST", `/api/v9/metadata/d/${documentId}/w/${workspaceId}/e/${elementId}`, q, body);
+        case "get_materials": need("path", path || ""); return api(method || "GET", path!, q, body);
+        case "translation_formats": return api("GET", "/api/v9/translations/translationformats");
+        case "create_translation": need("documentId", documentId); need("workspaceId", workspaceId); return api("POST", `/api/v9/translations/d/${documentId}/w/${workspaceId}`, q, body);
+        case "get_translation": need("path", path || ""); return api("GET", path!, q);
+        case "export_partstudio": need("path", path || ""); return api(method || "GET", path!, q, body);
+        case "export_part": need("path", path || ""); return api(method || "GET", path!, q, body);
+        case "export_assembly": need("path", path || ""); return api(method || "POST", path!, q, body);
+        case "drawing_operation":
+        case "release_operation":
+        case "blob_operation":
+        case "associativity_operation":
+        case "user_team_operation":
+        case "raw": need("path", path || ""); need("method", method || ""); return api(method!, path!, q, body);
+        default: throw new Error(`Unsupported operation: ${operation}`);
+      }
+    });
   });
-  server.registerTool("create_sketch_circle", { title:"Create Circle Sketch", description:"Create a circular sketch on a default plane. Dimensions in mm.", inputSchema:ctx.extend({plane:z.enum(["Top","Front","Right"]).default("Top"),radiusMm:z.number().positive(),centerXmm:z.number().default(0),centerYmm:z.number().default(0),name:z.string().default("Circle Sketch")}) }, async({documentId,workspaceId,elementId,plane,radiusMm,centerXmm,centerYmm,name})=>{
-    const body={btType:"BTFeatureDefinitionCall-1406",feature:{btType:"BTMSketch-151",featureType:"newSketch",name,parameters:[{btType:"BTMParameterQueryList-148",queries:[{btType:"BTMIndividualQuery-138",queryString:`query=qCreatedBy(makeId(\"${plane}\"), EntityType.FACE);`}],parameterId:"sketchPlane"}],entities:[{btType:"BTMSketchCurve-4",centerId:"circle.center",entityId:"circle",geometry:{btType:"BTCurveGeometryCircle-115",radius:radiusMm/1000,xCenter:centerXmm/1000,yCenter:centerYmm/1000,xDir:1,yDir:0,clockwise:false}}],constraints:[]}};
-    return call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features`,undefined,body));
-  });
-  server.registerTool("create_extrude", { title:"Create Extrude", description:"Extrude sketch regions. Uses BTMIndividualSketchRegionQuery so the sketch feature ID is the region source.", inputSchema:ctx.extend({sketchFeatureId:id,depthMm:z.number().positive(),operation:z.enum(["NEW","ADD","REMOVE"]).default("NEW"),name:z.string().default("Extrude")}) }, async({documentId,workspaceId,elementId,sketchFeatureId,depthMm,operation,name})=>{
-    const body={btType:"BTFeatureDefinitionCall-1406",feature:{btType:"BTMFeature-134",featureType:"extrude",name,parameters:[{btType:"BTMParameterEnum-145",value:"SOLID",enumName:"ExtendedToolBodyType",parameterId:"bodyType"},{btType:"BTMParameterEnum-145",value:operation,enumName:"NewBodyOperationType",parameterId:"operationType"},{btType:"BTMParameterQueryList-148",queries:[{btType:"BTMIndividualSketchRegionQuery-140",featureId:sketchFeatureId}],parameterId:"entities"},{btType:"BTMParameterEnum-145",value:"BLIND",enumName:"BoundingType",parameterId:"endBound"},{btType:"BTMParameterQuantity-147",expression:`${depthMm} mm`,parameterId:"depth"}]}};
-    return call(()=>api("POST",`/api/v9/partstudios/d/${documentId}/w/${workspaceId}/e/${elementId}/features`,undefined,body));
-  });
 
-  server.registerTool("create_assembly", { title:"Create Assembly", description:"Create an Assembly tab.", inputSchema:z.object({documentId:id,workspaceId:id,name:z.string().min(1)}) }, async({documentId,workspaceId,name})=>call(()=>api("POST",`/api/v9/assemblies/d/${documentId}/w/${workspaceId}`,undefined,{name})));
-  server.registerTool("get_assembly_definition", { title:"Get Assembly Definition", description:"Inspect assembly instances, occurrences, mates, connectors, transforms and suppression.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,includeMateFeatures:z.boolean().default(true),includeNonSolids:z.boolean().default(false),includeMateConnectors:z.boolean().default(true),excludeSuppressed:z.boolean().default(false)}) }, async({documentId,wvm,wvmId,elementId,includeMateFeatures,includeNonSolids,includeMateConnectors,excludeSuppressed})=>call(()=>api("GET",`/api/v9/assemblies/d/${documentId}/${wvm}/${wvmId}/e/${elementId}`,{includeMateFeatures,includeNonSolids,includeMateConnectors,excludeSuppressed})));
-  server.registerTool("assembly_operation", { title:"Assembly Operation", description:"Create/modify/delete assembly instances, mates, mate connectors, patterns and transforms using the documented assembly API payload.", inputSchema:z.object({method:z.enum(["POST","DELETE"]),path:z.string().startsWith("/api/"),body:z.unknown().optional()}) }, async({method,path,body})=>call(()=>api(method,path,undefined,body)));
+  server.registerTool("test_connection", { title: "Test Connection", description: "Verify Onshape authentication without modifying anything.", inputSchema: z.object({}) }, async () => call(() => api("GET", "/api/v10/documents", { limit: 1 })));
+  server.registerTool("list_onshape_documents", { title: "List Documents", description: "List documents visible to the Onshape account.", inputSchema: z.object({ q: z.string().optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional() }) }, async ({ q, offset, limit }) => call(() => api("GET", "/api/v10/documents", { q, offset: offset ?? 0, limit: limit ?? 20 })));
+  server.registerTool("get_onshape_document", { title: "Get Document", description: "Read document metadata.", inputSchema: z.object({ documentId: id }) }, async ({ documentId }) => call(() => api("GET", `/api/v10/documents/${encodeURIComponent(documentId)}`)));
+  server.registerTool("get_onshape_workspaces", { title: "Get Workspaces", description: "List document workspaces/branches.", inputSchema: z.object({ documentId: id }) }, async ({ documentId }) => call(() => api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/workspaces`)));
+  server.registerTool("get_onshape_versions", { title: "Get Versions", description: "List immutable document versions.", inputSchema: z.object({ documentId: id, offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional() }) }, async ({ documentId, offset, limit }) => call(() => api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/versions`, { offset: offset ?? 0, limit: limit ?? 20 })));
+  server.registerTool("get_onshape_elements", { title: "Get Elements", description: "List Part Studios, Assemblies, Drawings, BOMs and other document tabs.", inputSchema: z.object({ documentId: id, wvm: z.enum(["w","v","m"]).default("w"), wvmId: id }) }, async ({ documentId, wvm, wvmId }) => call(() => api("GET", `/api/v10/documents/d/${encodeURIComponent(documentId)}/${wvm}/${encodeURIComponent(wvmId)}/elements`)));
+  server.registerTool("onshape_api", { title: "Raw Onshape REST API", description: "Direct authenticated access to any documented Onshape GET, POST or DELETE endpoint. Use when the named CAD operation does not cover a newly added or specialized endpoint.", inputSchema: z.object({ method: z.enum(["GET","POST","DELETE"]), path: z.string().startsWith("/api/"), query: z.record(z.string(), z.unknown()).optional(), body: z.unknown().optional() }) }, async ({ method, path, query, body }) => call(() => api(method, path, query, body)));
+}, { serverInfo: { name: "Onshape Claude MCP", version: "5.0.0" } });
 
-  server.registerTool("get_configuration", { title:"Get Configuration", description:"Get configuration inputs and current configuration for a Part Studio or Assembly.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id}) }, async({documentId,wvm,wvmId,elementId})=>call(()=>api("GET",`/api/v10/elements/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/configuration`)));
-  server.registerTool("update_configuration", { title:"Update Configuration", description:"Update configuration using the encoded configuration payload/query documented by Onshape.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,configuration:z.string()}) }, async({documentId,workspaceId,elementId,configuration})=>call(()=>api("POST",`/api/v10/elements/d/${documentId}/w/${workspaceId}/e/${elementId}/configuration`,{configuration})));
-
-  server.registerTool("get_metadata", { title:"Get Metadata", description:"Read Onshape element/part metadata.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,partId:id.optional()}) }, async({documentId,wvm,wvmId,elementId,partId})=>call(()=>api("GET",`/api/v9/metadata/d/${documentId}/${wvm}/${wvmId}/e/${elementId}`,{partId})));
-  server.registerTool("update_metadata", { title:"Update Metadata", description:"Update documented metadata/custom properties.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,properties:z.array(z.record(z.string(),z.unknown()))}) }, async({documentId,workspaceId,elementId,properties})=>call(()=>api("POST",`/api/v9/metadata/d/${documentId}/w/${workspaceId}/e/${elementId}`,undefined,{properties})));
-  server.registerTool("get_material_library", { title:"Get Material Library", description:"Read a standard/custom Onshape material library element.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id}) }, async({documentId,wvm,wvmId,elementId})=>call(()=>api("GET",`/api/v9/materials/libraries/d/${documentId}/${wvm}/${wvmId}/e/${elementId}`)));
-
-  server.registerTool("list_translator_formats", { title:"List Translation Formats", description:"List formats supported by Onshape translators.", inputSchema:z.object({}) }, async()=>call(()=>api("GET","/api/v9/translations/translationformats")));
-  server.registerTool("create_translation", { title:"Create Translation", description:"Start an asynchronous Onshape import/export translation. Use list_translator_formats first and poll get_translation.", inputSchema:z.object({documentId:id,workspaceId:id,body:z.record(z.string(),z.unknown())}) }, async({documentId,workspaceId,body})=>call(()=>api("POST",`/api/v9/translations/d/${documentId}/w/${workspaceId}`,undefined,body)));
-  server.registerTool("get_translation", { title:"Get Translation", description:"Poll an asynchronous translation request until DONE or FAILED.", inputSchema:z.object({translationId:id}) }, async({translationId})=>call(()=>api("GET",`/api/v9/translations/${translationId}`)));
-  server.registerTool("export_partstudio", { title:"Export Part Studio", description:"Export a Part Studio synchronously when the selected format supports it.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,format:z.enum(["stl","gltf","parasolid"]),query:z.record(z.unknown()).optional()}) }, async({documentId,wvm,wvmId,elementId,format,query})=>call(()=>api("GET",`/api/v9/partstudios/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/${format}`,query)));
-  server.registerTool("export_part", { title:"Export Part", description:"Export a specific part synchronously to STL, glTF or Parasolid.", inputSchema:z.object({documentId:id,wvm,wvmId:id,elementId:id,partId:id,format:z.enum(["stl","gltf","parasolid"]),query:z.record(z.unknown()).optional()}) }, async({documentId,wvm,wvmId,elementId,partId,format,query})=>call(()=>api("GET",`/api/v16/parts/d/${documentId}/${wvm}/${wvmId}/e/${elementId}/partid/${partId}/${format}`,query)));
-  server.registerTool("export_assembly", { title:"Export Assembly", description:"Start an asynchronous assembly export. For detailed options use create_translation.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id,body:z.record(z.string(),z.unknown())}) }, async({documentId,workspaceId,elementId,body})=>call(()=>api("POST",`/api/v9/assemblies/d/${documentId}/w/${workspaceId}/e/${elementId}/translations`,undefined,body)));
-
-  server.registerTool("download_blob", { title:"Download Blob", description:"Retrieve a blob element/file reference from an Onshape document. Binary redirects may need the raw API or a file-capable client.", inputSchema:z.object({documentId:id,workspaceId:id,elementId:id}) }, async({documentId,workspaceId,elementId})=>call(()=>api("GET",`/api/v9/blobelements/d/${documentId}/w/${workspaceId}/e/${elementId}`)));
-  server.registerTool("blob_operation", { title:"Blob Operation", description:"Advanced blob upload/update endpoints. Use the raw API for multipart file bodies when needed.", inputSchema:z.object({method:z.enum(["GET","POST","DELETE"]),path:z.string().startsWith("/api/"),body:z.unknown().optional()}) }, async({method,path,body})=>call(()=>api(method,path,undefined,body)));
-
-  server.registerTool("drawing_operation", { title:"Drawing Operation", description:"Full Drawing API escape hatch for creating/editing drawing JSON, views, annotations, tables and translator operations.", inputSchema:z.object({method:z.enum(["GET","POST","DELETE"]),path:z.string().startsWith("/api/"),query:z.record(z.unknown()).optional(),body:z.unknown().optional()}) }, async({method,path,query,body})=>call(()=>api(method,path,query,body)));
-  server.registerTool("release_operation", { title:"Release Management Operation", description:"Release/revision/release-candidate operations permitted by the account. Use the documented Release Management endpoints.", inputSchema:z.object({method:z.enum(["GET","POST","DELETE"]),path:z.string().startsWith("/api/"),query:z.record(z.unknown()).optional(),body:z.unknown().optional()}) }, async({method,path,query,body})=>call(()=>api(method,path,query,body)));
-  server.registerTool("user_team_operation", { title:"User/Team Operation", description:"Access documented user/team endpoints permitted by the API key.", inputSchema:z.object({method:z.enum(["GET","POST","DELETE"]),path:z.string().startsWith("/api/"),query:z.record(z.unknown()).optional(),body:z.unknown().optional()}) }, async({method,path,query,body})=>call(()=>api(method,path,query,body)));
-  server.registerTool("associativity_operation", { title:"Associativity Operation", description:"Access Onshape associativity endpoints for relationships between parts, instances, documents and elements.", inputSchema:z.object({method:z.enum(["GET","POST","DELETE"]),path:z.string().startsWith("/api/"),query:z.record(z.unknown()).optional(),body:z.unknown().optional()}) }, async({method,path,query,body})=>call(()=>api(method,path,query,body)));
-}, { serverInfo:{name:"Onshape Claude MCP",version:"4.0.0"} });
-
-app.get("/", c=>c.json({name:"Onshape Claude MCP",status:"online",version:"4.0.0",onshapeConfigured:Boolean(ACCESS&&SECRET),capabilities:Object.keys(catalog)}));
-app.all("/mcp", c=>mcp(c.req.raw));
-app.all("/api/mcp", c=>mcp(c.req.raw));
+app.get("/", c => c.json({ name: "Onshape Claude MCP", status: "online", version: "5.0.0", onshapeConfigured: Boolean(ACCESS && SECRET), capabilities: capabilityText }));
+app.all("/mcp", c => mcp(c.req.raw));
+app.all("/api/mcp", c => mcp(c.req.raw));
 export default app;
