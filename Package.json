@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
+    "hono": "^4.9.0",
     "mcp-handler": "^2.1.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.2.0"
   }
 }
