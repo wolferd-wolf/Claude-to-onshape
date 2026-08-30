@@ -1,0 +1,14 @@
+{
+  "name": "onshape-claude-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "@hono/node-server": "latest",
+    "hono": "latest"
+  }
+}
