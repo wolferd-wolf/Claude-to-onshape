@@ -3,12 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "vercel dev"
-  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest",
-    "@hono/node-server": "latest",
-    "hono": "latest"
+    "hono": "^4.9.0"
   }
 }
